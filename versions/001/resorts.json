@@ -1,0 +1,10 @@
+{
+  "resorts": [
+    {
+      "id": "whistler_blackcomb",
+      "name": "Whistler Blackcomb",
+      "runs": "data/whistler_blackcomb/runs.geojson",
+      "lifts": "data/whistler_blackcomb/lifts.geojson"
+    }
+  ]
+}

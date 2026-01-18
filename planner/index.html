@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Planner POC</title>
+    <link
+      href="https://unpkg.com/cesium@1.115.0/Build/Cesium/Widgets/widgets.css"
+      rel="stylesheet"
+    />
+    <style>
+      body{font:14px/1.4 "Segoe UI",Tahoma,sans-serif;margin:24px;color:#222}
+      h1{font-size:20px;margin:0 0 12px}
+      .row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+      label{font-weight:600}
+      select,button{padding:6px 8px}
+      #summary{margin:12px 0;padding:8px;background:#f5f5f5;border-radius:6px}
+      #steps{margin:0;padding-left:18px}
+      #geojson{white-space:pre;max-height:240px;overflow:auto;background:#0f172a;color:#e2e8f0;padding:8px;border-radius:6px;font-size:12px}
+      #map{height:78vh;min-height:560px;width:100%;margin-top:10px;border-radius:10px;overflow:hidden;border:1px solid #ccc;position:relative}
+      #status{margin:8px 0;color:#444;font-size:13px}
+      #hud{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,0.55);color:#fff;padding:8px;border-radius:6px;font:11px/1.3 "Segoe UI",Tahoma,sans-serif;z-index:2}
+      .muted{color:#666}
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <strong>Planner POC</strong>
+      <a href="../index.html">Back to Map</a>
+    </div>
+    <div id="status" class="muted">Loading resort...</div>
+    <div class="row">
+      <label for="resort">Resort</label>
+      <select id="resort"></select>
+    </div>
+    <div class="row">
+      <label for="start">Start</label>
+      <select id="start"></select>
+      <label for="end">End</label>
+      <select id="end"></select>
+      <label for="pref">Preference</label>
+      <select id="pref">
+        <option value="minimize_time">Minimize time</option>
+        <option value="minimize_lifts">Minimize lifts</option>
+        <option value="minimize_difficulty">Minimize difficulty</option>
+        <option value="maximize_vertical">Maximize vertical</option>
+        <option value="scenic">Scenic</option>
+      </select>
+      <button id="plan">Plan route</button>
+      <button id="flyover" disabled>Load route in flyover</button>
+    </div>
+    <div class="row">
+      <button id="reset">Reset planner</button>
+    </div>
+
+    <div id="summary" class="muted">Load a route to see summary metrics.</div>
+    <div id="map"></div>
+    <div id="hud"><div id="hudText"></div></div>
+    <ol id="steps"></ol>
+    <h3>Route GeoJSON</h3>
+    <div id="geojson" class="muted">No route yet.</div>
+
+    <script src="../config.js"></script>
+    <script src="https://unpkg.com/cesium@1.115.0/Build/Cesium/Cesium.js"></script>
+    <script src="planner.js"></script>
+    <script>
+      if (window.CESIUM_ION_TOKEN) {
+        Cesium.Ion.defaultAccessToken = window.CESIUM_ION_TOKEN;
+      } else {
+        console.warn('Cesium Ion token missing. Set window.CESIUM_ION_TOKEN in config.js');
+      }
+
+      const resortSelect = document.getElementById('resort');
+      const startSelect = document.getElementById('start');
+      const endSelect = document.getElementById('end');
+      const prefSelect = document.getElementById('pref');
+      const planButton = document.getElementById('plan');
+      const flyoverButton = document.getElementById('flyover');
+      const summaryEl = document.getElementById('summary');
+      const stepsEl = document.getElementById('steps');
+      const geojsonEl = document.getElementById('geojson');
+      const statusEl = document.getElementById('status');
+      const mapEl = document.getElementById('map');
+      const resetButton = document.getElementById('reset');
+      let resorts = [];
+      let graph = null;
+      let viewer = null;
+      let runsLayer = null;
+      let startPoint = null;
+      let endPoint = null;
+      let reachability = null;
+      let hudTextEl = null;
+      const markerSize = 16;
+      let edgeEntities = new Map();
+      const DEFAULT_VIEWS = {
+        whistler_blackcomb: {
+          lon: -123.05162,
+          lat: 50.20088,
+          height: 6100,
+          heading: 147.1,
+          pitch: -18
+        }
+      };
+
+      function difficultyColor(difficulty) {
+        if (!difficulty) return Cesium.Color.fromCssColorString('#f39c12');
+        const val = String(difficulty).toLowerCase();
+        if (val === 'green') return Cesium.Color.fromCssColorString('#2ecc71');
+        if (val === 'blue') return Cesium.Color.fromCssColorString('#3498db');
+        if (val === 'black') return Cesium.Color.fromCssColorString('#2d3436');
+        if (val === 'double_black') return Cesium.Color.fromCssColorString('#000000');
+        return Cesium.Color.fromCssColorString('#f39c12');
+      }
+
+      function validateGraph(data) {
+        const errors = [];
+        if (!data || typeof data !== 'object') {
+          return ['Graph file is not valid JSON.'];
+        }
+        if (!Array.isArray(data.nodes) || data.nodes.length === 0) {
+          errors.push('nodes[] missing or empty.');
+        }
+        if (!Array.isArray(data.edges) || data.edges.length === 0) {
+          errors.push('edges[] missing or empty.');
+        }
+        if (!Array.isArray(data.nodes)) return errors;
+
+        const nodeIds = new Set();
+        for (const node of data.nodes) {
+          if (!node || typeof node !== 'object') {
+            errors.push('node is not an object.');
+            continue;
+          }
+          if (!node.id) errors.push('node missing id.');
+          if (!node.name) errors.push(`node ${node.id || ''} missing name.`);
+          if (!Number.isFinite(node.lat) || !Number.isFinite(node.lon)) {
+            errors.push(`node ${node.id || ''} missing valid lat/lon.`);
+          }
+          if (!Number.isFinite(node.elev_m)) {
+            errors.push(`node ${node.id || ''} missing valid elev_m.`);
+          }
+          if (node.id) nodeIds.add(node.id);
+        }
+        if (!Array.isArray(data.edges)) return errors;
+        for (const edge of data.edges) {
+          if (!edge || typeof edge !== 'object') {
+            errors.push('edge is not an object.');
+            continue;
+          }
+          if (!edge.id) errors.push('edge missing id.');
+          if (!edge.name) errors.push(`edge ${edge.id || ''} missing name.`);
+          if (!edge.type) errors.push(`edge ${edge.id || ''} missing type.`);
+          if (!edge.from || !nodeIds.has(edge.from)) {
+            errors.push(`edge ${edge.id || ''} has invalid from node.`);
+          }
+          if (!edge.to || !nodeIds.has(edge.to)) {
+            errors.push(`edge ${edge.id || ''} has invalid to node.`);
+          }
+          if (!Array.isArray(edge.geometry) || edge.geometry.length < 2) {
+            errors.push(`edge ${edge.id || ''} geometry missing or too short.`);
+          } else {
+            for (const coord of edge.geometry) {
+              if (!Array.isArray(coord) || coord.length < 2) {
+                errors.push(`edge ${edge.id || ''} has invalid coordinate.`);
+                break;
+              }
+            }
+          }
+        }
+        return errors;
+      }
+      let lastRouteGeojson = null;
+
+      function populateNodes(nodes) {
+        startSelect.innerHTML = '';
+        endSelect.innerHTML = '';
+
+        const allNodes = Array.from(nodes.values());
+        let list = allNodes.filter(n => (n.name || '').trim().toLowerCase() !== 'junction');
+        if (list.length === 0) list = allNodes;
+
+        // dedupe display names by adding a counter suffix when repeated
+        const nameCounts = {};
+        list.forEach(n => {
+          const key = (n.name || '').trim();
+          nameCounts[key] = (nameCounts[key] || 0) + 1;
+        });
+        const nameSeen = {};
+        function displayName(n) {
+          const base = (n.name || '').trim();
+          if (!base) return n.id;
+          const total = nameCounts[base] || 0;
+          if (total <= 1) return base;
+          nameSeen[base] = (nameSeen[base] || 0) + 1;
+          return `${base} (${nameSeen[base]})`;
+        }
+
+        const buckets = new Map();
+        function bucket(node) {
+          const name = (node.name || '').toLowerCase();
+          if (/(gondola|express|chair|lift|t-bar)/.test(name)) return 'Lifts';
+          if (/(village|creek|base|gondola base|top carpet|carpet)/.test(name)) return 'Bases';
+          if (/connector/.test(name)) return 'Connectors';
+          return 'Runs';
+        }
+        for (const n of list) {
+          const key = bucket(n);
+          if (!buckets.has(key)) buckets.set(key, []);
+          buckets.get(key).push(n);
+        }
+        for (const arr of buckets.values()) {
+          arr.sort((a, b) => a.name.localeCompare(b.name));
+        }
+
+        const startGroups = [];
+        const endGroups = [];
+        for (const [label, arr] of buckets.entries()) {
+          const sg = document.createElement('optgroup');
+          sg.label = label;
+          const eg = document.createElement('optgroup');
+          eg.label = label;
+          for (const node of arr) {
+            const os = document.createElement('option');
+            os.value = node.id;
+            os.textContent = displayName(node);
+            sg.appendChild(os);
+
+            const oe = document.createElement('option');
+            oe.value = node.id;
+            oe.textContent = displayName(node);
+            eg.appendChild(oe);
+          }
+          startGroups.push(sg);
+          endGroups.push(eg);
+        }
+        startGroups.sort((a, b) => a.label.localeCompare(b.label));
+        endGroups.sort((a, b) => a.label.localeCompare(b.label));
+        startGroups.forEach(g => startSelect.appendChild(g));
+        endGroups.forEach(g => endSelect.appendChild(g));
+
+        // pick first option from first group as defaults
+        const firstStart = startSelect.querySelector('option');
+        const firstEnd = endSelect.querySelector('option');
+        if (firstStart) startSelect.value = firstStart.value;
+        if (firstEnd) endSelect.value = firstEnd.value;
+      }
+
+      function setSummary(summary) {
+        if (!summary) {
+          summaryEl.textContent = 'No route found.';
+          return;
+        }
+        summaryEl.textContent =
+          `Time: ${summary.total_time_min.toFixed(1)} min | ` +
+          `Distance: ${Math.round(summary.total_distance_m)} m | ` +
+          `Vertical: ${Math.round(summary.total_vertical_drop_m)} m | ` +
+          `Lifts: ${summary.lifts}`;
+      }
+
+      function setSteps(routeEdges) {
+        stepsEl.innerHTML = '';
+        if (!routeEdges || routeEdges.length === 0) {
+          const li = document.createElement('li');
+          li.textContent = 'No steps.';
+          stepsEl.appendChild(li);
+          return;
+        }
+        for (const edge of routeEdges) {
+          const li = document.createElement('li');
+          li.textContent = Planner.formatStep(edge);
+          stepsEl.appendChild(li);
+        }
+      }
+
+      function populateResorts(list) {
+        resortSelect.innerHTML = '';
+        for (const resort of list) {
+          const opt = document.createElement('option');
+          opt.value = resort.id;
+          opt.textContent = resort.name;
+          resortSelect.appendChild(opt);
+        }
+      }
+
+      function renderGraph(g) {
+        if (!viewer || !runsLayer) return;
+        runsLayer.entities.removeAll();
+        edgeEntities.clear();
+        const colors = {
+          lift: Cesium.Color.RED.withAlpha(0.9),
+          run: Cesium.Color.CYAN.withAlpha(0.9),
+          walk: Cesium.Color.GRAY.withAlpha(0.9)
+        };
+        const positions = [];
+        for (const edge of g.edges || []) {
+          const coords = edge.geometry || [];
+          if (coords.length < 2) continue;
+          const flat = coords.map(c => [c[0], c[1]]).flat();
+          const type = edge.type || '';
+          const color = type === 'run'
+            ? difficultyColor(edge.difficulty)
+            : (colors[type] || Cesium.Color.YELLOW.withAlpha(0.9));
+          let material = color;
+          let width = 3;
+          if (type === 'lift') {
+            material = new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.RED, dashLength: 14 });
+            width = 2.5;
+          } else if (type === 'walk') {
+            material = new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.GRAY, dashLength: 10 });
+            width = 2;
+          }
+          const entity = runsLayer.entities.add({
+            name: edge.name,
+            id: edge.id,
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArray(flat),
+              width,
+              material,
+              clampToGround: true
+            }
+          });
+          edgeEntities.set(edge.id, entity);
+          positions.push(...flat);
+        }
+        if (!startPoint) {
+          startPoint = viewer.entities.add({
+            point: {
+              pixelSize: markerSize,
+              color: Cesium.Color.GREEN,
+              outlineColor: Cesium.Color.BLACK,
+              outlineWidth: Math.max(2, markerSize * 0.18),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND
+            },
+            label: {
+              text: 'Start',
+              font: `bold ${markerSize}px "Segoe UI", Arial, sans-serif`,
+              fillColor: Cesium.Color.BLACK,
+              outlineColor: Cesium.Color.WHITE,
+              outlineWidth: Math.max(2, markerSize * 0.18),
+              pixelOffset: new Cesium.Cartesian2(0, -markerSize),
+              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0.0, 400000),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND
+            }
+          });
+        }
+        if (!endPoint) {
+          endPoint = viewer.entities.add({
+            point: {
+              pixelSize: markerSize,
+              color: Cesium.Color.ORANGE,
+              outlineColor: Cesium.Color.BLACK,
+              outlineWidth: Math.max(2, markerSize * 0.18),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND
+            },
+            label: {
+              text: 'End',
+              font: `bold ${markerSize}px "Segoe UI", Arial, sans-serif`,
+              fillColor: Cesium.Color.BLACK,
+              outlineColor: Cesium.Color.WHITE,
+              outlineWidth: Math.max(2, markerSize * 0.18),
+              pixelOffset: new Cesium.Cartesian2(0, -markerSize),
+              distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0.0, 400000),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND
+            }
+          });
+        }
+      }
+
+      function computeReachability(g) {
+        if (!g) return null;
+        const nodes = Array.from(g.nodes.keys());
+        const reachable = new Map();
+        let reachablePairs = 0;
+        const totalPairs = nodes.length * Math.max(0, nodes.length - 1);
+        for (const start of nodes) {
+          const seen = new Set([start]);
+          const q = [start];
+          while (q.length) {
+            const cur = q.shift();
+            const edges = g.adjacency.get(cur) || [];
+            for (const edge of edges) {
+              if (!seen.has(edge.to)) {
+                seen.add(edge.to);
+                q.push(edge.to);
+              }
+            }
+          }
+          reachable.set(start, seen);
+          reachablePairs += Math.max(0, seen.size - 1);
+        }
+        return { reachable, reachablePairs, totalPairs };
+      }
+
+      function updateMarkers() {
+        if (!graph || !viewer || !startPoint || !endPoint) return;
+        const startNode = graph.nodes.get(startSelect.value);
+        const endNode = graph.nodes.get(endSelect.value);
+        const height = 0;
+        if (startNode) {
+          startPoint.position = Cesium.Cartesian3.fromDegrees(startNode.lon, startNode.lat, height);
+        }
+        if (endNode) {
+          endPoint.position = Cesium.Cartesian3.fromDegrees(endNode.lon, endNode.lat, height);
+        }
+      }
+
+      async function loadResort(resortId) {
+        try {
+          const resort = resorts.find(r => r.id === resortId) || resorts[0];
+          if (!resort) {
+            statusEl.textContent = 'No resort found.';
+            return;
+          }
+          statusEl.textContent = 'Loading graph...';
+          const res = await fetch(resort.graph);
+          if (!res.ok) throw new Error(`Failed to load graph (${res.status})`);
+          const data = await res.json();
+          const errors = validateGraph(data);
+          if (errors.length > 0) {
+            summaryEl.textContent = `Graph validation failed: ${errors[0]}`;
+            stepsEl.innerHTML = '';
+            geojsonEl.textContent = JSON.stringify({ errors }, null, 2);
+            flyoverButton.disabled = true;
+            graph = null;
+            statusEl.textContent = 'Graph validation failed.';
+            return;
+          }
+          if (viewer && Array.isArray(data.nodes) && data.nodes.length > 0) {
+            try {
+              statusEl.textContent = 'Sampling terrain elevations...';
+              const cartos = data.nodes.map(n => Cesium.Cartographic.fromDegrees(n.lon, n.lat));
+              await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, cartos);
+              cartos.forEach((c, i) => {
+                const h = c.height;
+                if (Number.isFinite(h)) data.nodes[i].elev_m = h;
+              });
+            } catch (e) {
+              console.warn('Elevation sampling failed, keeping defaults.', e);
+            }
+          }
+          // add short walk connectors to improve connectivity
+          const nodeList = data.nodes || [];
+          const neighborLimit = 8;
+          const maxNeighborDist = 600; // meters, widened to stitch clusters
+          const deg2rad = Math.PI / 180;
+          function haversine(a, b) {
+            const lon1 = a.lon * deg2rad, lat1 = a.lat * deg2rad;
+            const lon2 = b.lon * deg2rad, lat2 = b.lat * deg2rad;
+            const dlat = lat2 - lat1, dlon = lon2 - lon1;
+            const h = Math.sin(dlat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dlon/2)**2;
+            return 2 * 6371000 * Math.asin(Math.sqrt(h));
+          }
+          const walkEdges = [];
+          const existing = new Set((data.edges||[]).map(e => `${e.from}->${e.to}`));
+          for (let i = 0; i < nodeList.length; i++) {
+            const a = nodeList[i];
+            const neighbors = [];
+            for (let j = 0; j < nodeList.length; j++) {
+              if (i === j) continue;
+              const b = nodeList[j];
+              const d = haversine(a, b);
+              if (d <= maxNeighborDist) neighbors.push({ b, d });
+            }
+            neighbors.sort((x, y) => x.d - y.d);
+            for (let k = 0; k < Math.min(neighborLimit, neighbors.length); k++) {
+              const b = neighbors[k].b;
+              const key = `${a.id}->${b.id}`;
+              if (existing.has(key)) continue;
+              existing.add(key);
+              walkEdges.push({
+                id: `walk_${a.id}_${b.id}`,
+                name: 'Connector',
+                type: 'walk',
+                from: a.id,
+                to: b.id,
+                geometry: [
+                  [a.lon, a.lat, a.elev_m || 0],
+                  [b.lon, b.lat, b.elev_m || 0]
+                ]
+              });
+            }
+          }
+          data.edges = (data.edges || []).concat(walkEdges);
+          graph = Planner.buildGraph(data);
+          reachability = computeReachability(graph);
+          const iso = [];
+          if (reachability && reachability.reachable) {
+            for (const [id, set] of reachability.reachable.entries()) {
+              if (set.size <= 1) iso.push(id);
+            }
+          }
+          populateNodes(graph.nodes);
+          summaryEl.textContent = 'Load a route to see summary metrics.';
+          stepsEl.innerHTML = '';
+          geojsonEl.textContent = 'No route yet.';
+          flyoverButton.disabled = true;
+          renderGraph(graph);
+          updateMarkers();
+          const reachText = reachability
+            ? `Reachable pairs: ${reachability.reachablePairs}/${reachability.totalPairs}${iso.length ? `; isolated: ${iso.length}` : ''}`
+            : 'Reachability not computed';
+          statusEl.textContent = `Graph loaded. ${reachText}`;
+          if (iso.length) {
+            console.warn('Isolated nodes (no outgoing paths):', iso);
+          }
+          // match flyover default view if available
+          const view = DEFAULT_VIEWS[resort.id];
+          if (view) {
+            viewer.camera.setView({
+              destination: Cesium.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
+              orientation: {
+                heading: Cesium.Math.toRadians(view.heading),
+                pitch: Cesium.Math.toRadians(view.pitch),
+                roll: 0
+              }
+            });
+          } else if (runsLayer && runsLayer.entities.values.length > 0) {
+            viewer.zoomTo(runsLayer);
+          }
+        } catch (err) {
+          console.error('Failed to load resort', err);
+          statusEl.textContent = `Failed to load resort: ${err.message}`;
+          summaryEl.textContent = 'Could not load resort.';
+          stepsEl.innerHTML = '';
+          geojsonEl.textContent = 'No route yet.';
+          flyoverButton.disabled = true;
+        }
+      }
+
+      async function init() {
+        try {
+          viewer = new Cesium.Viewer(mapEl, {
+            timeline: false,
+            animation: false,
+            baseLayerPicker: false,
+            selectionIndicator: true,
+            terrainProvider: new Cesium.EllipsoidTerrainProvider()
+          });
+          viewer.scene.globe.depthTestAgainstTerrain = true;
+          viewer.scene.globe.maximumScreenSpaceError = 2;
+          viewer.scene.globe.tileCacheSize = 1000;
+          viewer.scene.fog.enabled = false;
+          viewer.scene.postProcessStages.fxaa.enabled = true;
+          viewer.resolutionScale = Math.min(window.devicePixelRatio, 2);
+          viewer.clock.shouldAnimate = true;
+          viewer.imageryLayers.removeAll();
+          statusEl.textContent = 'Loading imagery...';
+          let imageryLoaded = false;
+          try {
+            const ionImagery = await Cesium.IonImageryProvider.fromAssetId(2);
+            viewer.imageryLayers.addImageryProvider(ionImagery);
+            imageryLoaded = true;
+            statusEl.textContent = 'Imagery loaded (Ion)';
+          } catch (e) {
+            console.warn('Ion imagery failed, using OSM.', e);
+          }
+          if (!imageryLoaded) {
+            try {
+              const osm = new Cesium.OpenStreetMapImageryProvider({ url: 'https://a.tile.openstreetmap.org/' });
+              viewer.imageryLayers.addImageryProvider(osm);
+              statusEl.textContent = 'Imagery loaded (OSM)';
+            } catch (e) {
+              statusEl.textContent = 'Imagery unavailable';
+            }
+          }
+          statusEl.textContent = 'Loading terrain...';
+          try {
+            const terrain = await Cesium.createWorldTerrainAsync();
+            viewer.terrainProvider = terrain;
+            statusEl.textContent = 'Terrain loaded';
+          } catch (e) {
+            console.warn('Terrain failed; using ellipsoid.', e);
+            statusEl.textContent = 'Terrain unavailable; using ellipsoid';
+          }
+
+          runsLayer = new Cesium.CustomDataSource('routes');
+          viewer.dataSources.add(runsLayer);
+          viewer.resize();
+          window.addEventListener('resize', () => viewer.resize());
+          hudTextEl = document.getElementById('hudText');
+          viewer.scene.postRender.addEventListener(() => {
+            if (!hudTextEl) return;
+            const cam = viewer.camera;
+            const carto = Cesium.Cartographic.fromCartesian(cam.position);
+            const lat = Cesium.Math.toDegrees(carto.latitude);
+            const lon = Cesium.Math.toDegrees(carto.longitude);
+            const height = carto.height;
+            const heading = Cesium.Math.toDegrees(cam.heading);
+            const pitch = Cesium.Math.toDegrees(cam.pitch);
+            const roll = Cesium.Math.toDegrees(cam.roll);
+            const fmt = (v, n) => (Number.isFinite(v) ? v.toFixed(n) : '-');
+            hudTextEl.innerHTML =
+              `Lat ${fmt(lat, 5)}<br>` +
+              `Lon ${fmt(lon, 5)}<br>` +
+              `Alt ${fmt(height, 0)} m<br>` +
+              `Head ${fmt(heading, 1)}°<br>` +
+              `Pitch ${fmt(pitch, 1)}°<br>` +
+              `Roll ${fmt(roll, 1)}°`;
+          });
+
+          async function fetchResorts() {
+            const paths = ['resorts.json', '../resorts.json'];
+            let lastErr = null;
+            for (const p of paths) {
+              try {
+                const res = await fetch(p);
+                if (!res.ok) throw new Error(`status ${res.status}`);
+                return await res.json();
+              } catch (e) {
+                lastErr = e;
+              }
+            }
+            throw lastErr || new Error('Resorts file not found');
+          }
+
+          const data = await fetchResorts();
+          resorts = Array.isArray(data.resorts) ? data.resorts : [];
+          populateResorts(resorts);
+          if (resorts.length > 0) {
+            resortSelect.value = resorts[0].id;
+            await loadResort(resorts[0].id);
+          } else {
+            statusEl.textContent = 'No resorts available.';
+          }
+        } catch (err) {
+          console.error('Planner init failed', err);
+          statusEl.textContent = `Planner init failed: ${err.message}`;
+        }
+      }
+
+      resortSelect.addEventListener('change', () => {
+        loadResort(resortSelect.value);
+      });
+      startSelect.addEventListener('change', () => updateMarkers());
+      endSelect.addEventListener('change', () => updateMarkers());
+      resetButton.addEventListener('click', () => {
+        // show all edges again
+        for (const entity of runsLayer.entities.values) {
+          entity.show = true;
+          if (entity.polyline) entity.polyline.width = 3;
+        }
+        lastRouteGeojson = null;
+        geojsonEl.textContent = 'No route yet.';
+        summaryEl.textContent = 'Load a route to see summary metrics.';
+        stepsEl.innerHTML = '';
+        flyoverButton.disabled = true;
+        statusEl.textContent = 'Planner reset. All runs/lifts visible.';
+      });
+
+      planButton.addEventListener('click', () => {
+        if (!graph) return;
+        const start = startSelect.value;
+        const end = endSelect.value;
+        if (start === end) {
+          summaryEl.textContent = 'Start and end are the same.';
+          stepsEl.innerHTML = '';
+          geojsonEl.textContent = 'No route yet.';
+          return;
+        }
+        const pref = prefSelect.value;
+        const routeEdges = Planner.findRoute(graph, start, end, pref);
+        if (!routeEdges) {
+          let extra = '';
+          if (reachability && reachability.reachable) {
+            const reachableFromStart = reachability.reachable.get(start);
+            if (reachableFromStart && !reachableFromStart.has(end)) {
+              extra = ' (end not reachable from start in current graph)';
+            }
+          }
+          summaryEl.textContent = `No route found${extra}.`;
+          stepsEl.innerHTML = '';
+          geojsonEl.textContent = 'No route yet.';
+          flyoverButton.disabled = true;
+          return;
+        }
+        setSummary(Planner.summarizeRoute(routeEdges));
+        setSteps(routeEdges);
+        const geojson = Planner.routeToGeoJSON(routeEdges);
+        lastRouteGeojson = geojson;
+        geojsonEl.textContent = JSON.stringify(geojson, null, 2);
+        const idsInRoute = new Set(routeEdges.map(e => e.id));
+        for (const [id, entity] of edgeEntities.entries()) {
+          const onRoute = idsInRoute.has(id);
+          entity.show = onRoute;
+          if (onRoute && entity.polyline) {
+            entity.polyline.width = 5;
+          }
+        }
+        flyoverButton.disabled = false;
+      });
+
+      flyoverButton.addEventListener('click', () => {
+        if (!lastRouteGeojson) return;
+        localStorage.setItem('skiRunFinder.routeGeojson', JSON.stringify(lastRouteGeojson));
+        window.location.href = '../index.html?route=1';
+      });
+
+      init().catch(err => {
+        console.error(err);
+        statusEl.textContent = `Planner init failed: ${err.message}`;
+      });
+    </script>
+  </body>
+</html>

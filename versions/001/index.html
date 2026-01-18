@@ -16,12 +16,7 @@
       #status{margin-top:6px;font-style:italic}
       #panelHeader{margin-top:0}
       #ui.collapsed .row:not(#panelHeader), #ui.collapsed #meta, #ui.collapsed #status{display:none}
-      #hud{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,0.55);color:#fff;padding:8px;border-radius:6px;font:11px/1.3 "Segoe UI",Tahoma,sans-serif;z-index:2}
-      #hud button{margin-top:6px;width:100%;font-size:11px}
-      #panelHeader a{color:#0f172a;text-decoration:none;font-weight:600}
-      #plannerLink{margin-left:auto;padding:6px 10px;background:#0ea5e9;color:#0b1120;border-radius:4px;text-decoration:none;font-weight:700;border:1px solid #0284c7}
-      #plannerLink:hover{background:#38bdf8;color:#0b1120}
-      #panelHeader a:hover{text-decoration:underline}
+      #hud{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,0.55);color:#fff;padding:6px 8px;border-radius:6px;font:11px/1.3 "Segoe UI",Tahoma,sans-serif;z-index:2}
     </style>
   </head>
   <body>
@@ -30,7 +25,6 @@
       <div class="row" id="panelHeader">
         <strong>Controls</strong>
         <button id="togglePanel">Minimize</button>
-        <a id="plannerLink" href="planner/index.html">Planner</a>
       </div>
       <div class="row">
         <label for="resortSelect">Resort</label>
@@ -50,7 +44,6 @@
         </select>
         <button id="start">Start Flyover</button>
         <button id="pause" disabled>Pause</button>
-        <button id="clearRoute">Clear planned route</button>
       </div>
       <div class="row">
         <label for="speed">Speed</label>
@@ -78,19 +71,11 @@
       </div>
       <div id="status"></div>
     </div>
-    <div id="hud">
-      <div id="hudText"></div>
-      <button id="setDefaultView">Set as Default View</button>
-    </div>
+    <div id="hud"></div>
 
-    <script src="config.js"></script>
     <script src="https://unpkg.com/cesium@1.115.0/Build/Cesium/Cesium.js"></script>
     <script>
-      if (window.CESIUM_ION_TOKEN) {
-        Cesium.Ion.defaultAccessToken = window.CESIUM_ION_TOKEN;
-      } else {
-        console.warn('Cesium Ion token missing. Set window.CESIUM_ION_TOKEN in config.js');
-      }
+      Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJmZjhkZDA3OS1iOTI0LTQzMjMtOTA1ZS1mMjRlODQ3MjMzY2MiLCJpZCI6MzgwMjMxLCJpYXQiOjE3Njg2OTkyMTF9.3SYENMo5wG8dipBrHLDUPgtV9t-mb6Ns2H4D55IQg8I';
 
       let viewer;
       let resorts = [];
@@ -102,10 +87,6 @@
       let allRunsDataSource = null;
       let liftsDataSource = null;
       let buildingsTileset = null;
-      let routeDataSource = null;
-      let routeCoords = [];
-      let routeSegments = [];
-      let plannedRouteLoaded = false;
       let flyoverTick = null;
       let isPaused = false;
       let flightBaseSpeed = 40;
@@ -117,7 +98,6 @@
       let pauseButton;
       let panelToggleButton;
       let panelEl;
-      let clearRouteButton;
       let speedInput;
       let rangeInput;
       let speedValue;
@@ -128,17 +108,11 @@
       let metaDrop;
       let metaSlope;
       let hudEl;
-      let hudTextEl;
-      let setDefaultViewButton;
-      let currentSegmentLabel = '';
       let currentRunsFeatures = [];
       let terrainReadyPromise = Promise.resolve(false);
-      let isolationActive = false;
       const STORAGE_RESORT_KEY = 'skiRunFinder.resort';
       const STORAGE_RUN_KEY_PREFIX = 'skiRunFinder.run.';
       const STORAGE_PANEL_KEY = 'skiRunFinder.panelCollapsed';
-      const ROUTE_STORAGE_KEY = 'skiRunFinder.routeGeojson';
-      const STORAGE_VIEW_KEY_PREFIX = 'skiRunFinder.view.';
       const RESORT_VIEWS = {
         whistler_blackcomb: {
           lon: -123.13,
@@ -188,10 +162,10 @@
       function labelStyle(text, maxDistance) {
         return {
           text,
-          font: 'bold 13px "Segoe UI", Tahoma, sans-serif',
+          font: '12px "Segoe UI", Tahoma, sans-serif',
           fillColor: Cesium.Color.WHITE,
-          outlineColor: Cesium.Color.fromCssColorString('rgba(0,0,0,0.9)'),
-          outlineWidth: 3,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
           style: Cesium.LabelStyle.FILL_AND_OUTLINE,
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
           pixelOffset: new Cesium.Cartesian2(0, -8),
@@ -227,217 +201,6 @@
           : entity.properties;
         if (!props || props.type !== 'run') return null;
         return props.runName || null;
-      }
-
-      function getRouteSegmentName(index, segments) {
-        if (!segments || segments.length === 0) return '';
-        for (const segment of segments) {
-          if (index >= segment.startIndex && index <= segment.endIndex) {
-            const label = segment.type ? `${segment.type.toUpperCase()}: ${segment.name}` : segment.name;
-            return label;
-          }
-        }
-        return '';
-      }
-
-      function buildRouteOverlay(geo) {
-        if (!routeDataSource) {
-          routeDataSource = new Cesium.CustomDataSource('route');
-          viewer.dataSources.add(routeDataSource);
-        }
-        routeDataSource.entities.removeAll();
-        routeCoords = [];
-        routeSegments = [];
-        const features = (geo && geo.features) ? geo.features : [];
-        for (const feat of features) {
-          if (!feat.geometry || feat.geometry.type !== 'LineString') continue;
-          const coords = feat.geometry.coordinates || [];
-          if (coords.length < 2) continue;
-          const props = feat.properties || {};
-          const type = String(props.type || '').toLowerCase();
-          const difficulty = normalizeDifficulty(props);
-          let material = Cesium.Color.CYAN;
-          let width = 5;
-          if (type === 'lift') {
-            material = new Cesium.PolylineDashMaterialProperty({
-              color: Cesium.Color.RED,
-              dashLength: 14
-            });
-            width = 4;
-          } else if (type === 'walk') {
-            material = new Cesium.PolylineDashMaterialProperty({
-              color: Cesium.Color.GRAY,
-              dashLength: 10
-            });
-            width = 3;
-          } else {
-            material = difficultyColor(difficulty);
-          }
-          routeDataSource.entities.add({
-            name: props.name || 'Route segment',
-            polyline: {
-              positions: Cesium.Cartesian3.fromDegreesArray(coords.flat()),
-              width,
-              material,
-              clampToGround: true
-            }
-          });
-          const segmentStart = routeCoords.length;
-          for (let i = 0; i < coords.length; i++) {
-            const [lon, lat] = coords[i];
-            if (routeCoords.length > 0) {
-              const last = routeCoords[routeCoords.length - 1];
-              if (last[0] === lon && last[1] === lat) continue;
-            }
-            routeCoords.push([lon, lat]);
-          }
-          const segmentEnd = routeCoords.length - 1;
-          if (segmentEnd >= segmentStart) {
-            routeSegments.push({
-              name: props.name || 'Route segment',
-              type: type || 'segment',
-              startIndex: segmentStart,
-              endIndex: segmentEnd
-            });
-          }
-        }
-      }
-
-      function loadPlannedRoute(options = {}) {
-        const raw = localStorage.getItem(ROUTE_STORAGE_KEY);
-        if (!raw) {
-          document.getElementById('status').textContent = 'No planned route found';
-          return;
-        }
-        try {
-          const geo = JSON.parse(raw);
-          buildRouteOverlay(geo);
-          plannedRouteLoaded = routeCoords.length > 1;
-          if (routeCoords.length > 1) {
-            const focus = options.focusStart !== false;
-            if (focus) {
-              const first = routeCoords[0];
-              const next = routeCoords[1] || first;
-              const heading = Cesium.Math.toRadians(bearingDegrees(first, next));
-              const height = heightForCoord(first[0], first[1], 0) + 2500;
-              viewer.camera.setView({
-                destination: Cesium.Cartesian3.fromDegrees(first[0], first[1], height),
-                orientation: {
-                  heading,
-                  pitch: Cesium.Math.toRadians(-35),
-                  roll: 0
-                }
-              });
-            }
-            if (options.startFlyover) {
-              flyover(routeCoords, { segments: routeSegments, skipInitialFly: true });
-            } else {
-              document.getElementById('status').textContent = 'Planned route loaded. Click Start Flyover.';
-            }
-            const firstLabel = (routeSegments && routeSegments.length > 0)
-              ? routeSegments[0].name
-              : (geo.features && geo.features[0] && geo.features[0].properties && geo.features[0].properties.name) || 'Planned route';
-            enterPlannedRouteMode(firstLabel);
-          } else {
-            document.getElementById('status').textContent = 'Planned route is empty';
-          }
-        } catch (e) {
-          console.warn('Failed to load planned route.', e);
-          document.getElementById('status').textContent = 'Failed to load planned route';
-        }
-      }
-
-      function enterPlannedRouteMode(firstLabel) {
-        isolationActive = false;
-        const runsToggle = document.getElementById('toggleRuns');
-        const liftsToggle = document.getElementById('toggleLifts');
-        if (runsToggle) runsToggle.checked = false;
-        if (liftsToggle) liftsToggle.checked = false;
-        if (allRunsDataSource) allRunsDataSource.show = false;
-        if (liftsDataSource) liftsDataSource.show = false;
-
-        if (runSelect) {
-          runSelect.innerHTML = '';
-          const opt = document.createElement('option');
-          opt.value = '';
-          opt.textContent = firstLabel || 'Planned route';
-          runSelect.appendChild(opt);
-          runSelect.disabled = true;
-        }
-        if (difficultyFilter) difficultyFilter.disabled = true;
-      }
-
-      function exitPlannedRouteMode() {
-        isolationActive = false;
-        if (runSelect) {
-          runSelect.disabled = false;
-          populateRunSelect(currentRunName);
-        }
-        if (difficultyFilter) difficultyFilter.disabled = false;
-        const runsToggle = document.getElementById('toggleRuns');
-        const liftsToggle = document.getElementById('toggleLifts');
-        const showRuns = runsToggle ? runsToggle.checked : true;
-        const showLifts = liftsToggle ? liftsToggle.checked : true;
-        if (runsToggle) runsToggle.checked = showRuns;
-        if (liftsToggle) liftsToggle.checked = showLifts;
-        if (allRunsDataSource) {
-          for (const e of allRunsDataSource.entities.values) e.show = showRuns;
-        }
-        if (liftsDataSource) {
-          for (const e of liftsDataSource.entities.values) e.show = showLifts;
-        }
-        refreshRunOverlay();
-        if (currentRunEntity) currentRunEntity.show = showRuns;
-      }
-
-      function isolateEntity(entity) {
-        if (!entity) return;
-        isolationActive = true;
-        const runsToggle = document.getElementById('toggleRuns');
-        const liftsToggle = document.getElementById('toggleLifts');
-        if (runsToggle) runsToggle.checked = true;
-        if (liftsToggle) liftsToggle.checked = true;
-
-        if (allRunsDataSource && allRunsDataSource.entities.contains(entity)) {
-          for (const e of allRunsDataSource.entities.values) e.show = false;
-          entity.show = true;
-          if (currentRunEntity) currentRunEntity.show = false;
-          if (liftsDataSource) for (const e of liftsDataSource.entities.values) e.show = false;
-          return;
-        }
-        if (liftsDataSource && liftsDataSource.entities.contains(entity)) {
-          for (const e of liftsDataSource.entities.values) e.show = false;
-          entity.show = true;
-          if (allRunsDataSource) for (const e of allRunsDataSource.entities.values) e.show = false;
-          if (currentRunEntity) currentRunEntity.show = false;
-        }
-      }
-
-      function clearIsolation() {
-        if (!isolationActive) return;
-        isolationActive = false;
-        const runsToggle = document.getElementById('toggleRuns');
-        const liftsToggle = document.getElementById('toggleLifts');
-        const showRuns = runsToggle ? runsToggle.checked : true;
-        const showLifts = liftsToggle ? liftsToggle.checked : true;
-        if (allRunsDataSource) {
-          for (const e of allRunsDataSource.entities.values) e.show = showRuns;
-        }
-        if (liftsDataSource) {
-          for (const e of liftsDataSource.entities.values) e.show = showLifts;
-        }
-        if (currentRunEntity) currentRunEntity.show = showRuns;
-      }
-
-      function clearPlannedRoute() {
-        localStorage.removeItem(ROUTE_STORAGE_KEY);
-        if (routeDataSource) routeDataSource.entities.removeAll();
-        routeCoords = [];
-        routeSegments = [];
-        plannedRouteLoaded = false;
-        currentSegmentLabel = '';
-        document.getElementById('status').textContent = 'Planned route cleared';
-        exitPlannedRouteMode();
       }
 
       function lineLengthMeters(coords) {
@@ -593,8 +356,7 @@
         for (const [name, feat] of runsByName.entries()) {
           const difficulty = normalizeDifficulty(feat.properties || {});
           if (filter !== 'all' && difficulty !== filter) continue;
-          const length = feat.properties.length_m || lineLengthMeters(feat.geometry.coordinates);
-          entries.push({ name, difficulty, length });
+          entries.push({ name, difficulty });
         }
 
         runSelect.innerHTML = '';
@@ -608,14 +370,11 @@
         }
         runSelect.disabled = false;
 
-        entries.sort((a, b) => (b.length || 0) - (a.length || 0));
-
         for (const entry of entries) {
           const opt = document.createElement('option');
           opt.value = entry.name;
           const diffLabel = difficultyLabel(entry.difficulty);
-          const km = entry.length ? (entry.length / 1000).toFixed(2) : '–';
-          opt.textContent = `${entry.name} (${diffLabel}) - ${km} km`;
+          opt.textContent = `${entry.name} (${diffLabel})`;
           runSelect.appendChild(opt);
         }
 
@@ -660,7 +419,7 @@
       }
 
       function applyResortView(resort) {
-        const view = getDefaultView(resort);
+        const view = resort && RESORT_VIEWS[resort.id];
         if (!view) return;
         viewer.camera.flyTo({
           destination: Cesium.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
@@ -671,24 +430,6 @@
           },
           duration: 1.6
         });
-      }
-
-      function getDefaultView(resort) {
-        if (!resort) return null;
-        const stored = localStorage.getItem(`${STORAGE_VIEW_KEY_PREFIX}${resort.id}`);
-        if (stored) {
-          try {
-            return JSON.parse(stored);
-          } catch (e) {
-            console.warn('Failed to parse stored view.', e);
-          }
-        }
-        return RESORT_VIEWS[resort.id] || null;
-      }
-
-      function saveDefaultView(resort, view) {
-        if (!resort || !view) return;
-        localStorage.setItem(`${STORAGE_VIEW_KEY_PREFIX}${resort.id}`, JSON.stringify(view));
       }
 
       async function setResort(resortId) {
@@ -776,7 +517,6 @@
         const headings = new Cesium.SampledProperty(Number);
         const start = Cesium.JulianDate.now();
         let lastHeading = null;
-        const times = [];
 
         let t = 0;
         for (let i = 0; i < coords.length; i++) {
@@ -800,10 +540,9 @@
           positions.addSample(time, position);
           headings.addSample(time, headingRad);
           lastHeading = headingRad;
-          times.push(time);
         }
 
-        return { start, end: Cesium.JulianDate.addSeconds(start, t, new Cesium.JulianDate()), positions, headings, times };
+        return { start, end: Cesium.JulianDate.addSeconds(start, t, new Cesium.JulianDate()), positions, headings };
       }
 
       function stopFlyover() {
@@ -813,7 +552,6 @@
         flyoverTick = null;
         isPaused = false;
         viewer.clock.shouldAnimate = true;
-        currentSegmentLabel = '';
         if (pauseButton) {
           pauseButton.textContent = 'Pause';
           pauseButton.disabled = true;
@@ -846,7 +584,7 @@
         }
       }
 
-      async function flyover(coords, options = {}) {
+      async function flyover(coords) {
         if (!coords || coords.length < 2) return;
         stopFlyover();
         document.getElementById('status').textContent = 'Flying...';
@@ -855,41 +593,24 @@
           pauseButton.textContent = 'Pause';
         }
         isPaused = false;
-        currentSegmentLabel = '';
 
         const top = coords[0];
         const topNext = coords[1] || coords[0];
         const topHeading = bearingDegrees(top, topNext);
         const topHeight = heightForCoord(top[0], top[1], 0);
-        const pitch = Cesium.Math.toRadians(-25);
-        const topRange = Number(rangeInput.value || 300);
-        const topPos = Cesium.Cartesian3.fromDegrees(top[0], top[1], topHeight + 1200);
-        if (options.skipInitialFly) {
-          viewer.camera.lookAt(topPos, new Cesium.HeadingPitchRange(Cesium.Math.toRadians(topHeading), pitch, topRange));
-        } else {
-          await viewer.camera.flyTo({
-            destination: topPos,
-            orientation: {
-              heading: Cesium.Math.toRadians(topHeading),
-              pitch: Cesium.Math.toRadians(-35),
-              roll: 0.0
-            },
-            duration: 2.0
-          });
-        }
+        await viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(top[0], top[1], topHeight + 1200),
+          orientation: {
+            heading: Cesium.Math.toRadians(topHeading),
+            pitch: Cesium.Math.toRadians(-35),
+            roll: 0.0
+          },
+          duration: 2.0
+        });
 
         const speed = Number(speedInput.value || 100);
         const samples = buildFlightSamples(coords, speed);
         flightBaseSpeed = speed;
-        const segments = options.segments || (options.segmentName ? [{
-          name: options.segmentName,
-          type: options.segmentType || 'run',
-          startIndex: 0,
-          endIndex: coords.length - 1
-        }] : null);
-        const times = samples.times || [];
-        let timeIndex = 0;
-        let lastSegmentLabel = '';
         viewer.clock.startTime = samples.start.clone();
         viewer.clock.stopTime = samples.end.clone();
         viewer.clock.currentTime = samples.start.clone();
@@ -899,30 +620,20 @@
         const camera = viewer.camera;
         const scratch = new Cesium.Cartesian3();
 
+        const pitch = Cesium.Math.toRadians(-25);
         flyoverTick = (clock) => {
           const time = clock.currentTime;
           const pos = samples.positions.getValue(time, scratch);
           if (!pos) return;
           const heading = samples.headings.getValue(time);
-          const dynamicRange = Number(rangeInput.value || 300);
-          camera.lookAt(pos, new Cesium.HeadingPitchRange(heading, pitch, dynamicRange));
-          if (segments && times.length > 0) {
-            while (timeIndex + 1 < times.length && Cesium.JulianDate.greaterThanOrEquals(time, times[timeIndex + 1])) {
-              timeIndex += 1;
-            }
-            const label = getRouteSegmentName(timeIndex, segments);
-            if (label !== lastSegmentLabel) {
-              currentSegmentLabel = label;
-              lastSegmentLabel = label;
-            }
-          }
+          const rangeMeters = Number(rangeInput.value || 300);
+          camera.lookAt(pos, new Cesium.HeadingPitchRange(heading, pitch, rangeMeters));
 
           if (Cesium.JulianDate.greaterThanOrEquals(time, samples.end)) {
             viewer.clock.onTick.removeEventListener(flyoverTick);
             viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
             flyoverTick = null;
             isPaused = false;
-            currentSegmentLabel = '';
             if (pauseButton) {
               pauseButton.textContent = 'Pause';
               pauseButton.disabled = true;
@@ -1019,7 +730,6 @@
           timeline: false,
           animation: false,
           baseLayerPicker: false,
-          selectionIndicator: false,
           terrainProvider: new Cesium.EllipsoidTerrainProvider()
         });
         viewer.scene.globe.depthTestAgainstTerrain = true;
@@ -1030,7 +740,7 @@
         viewer.resolutionScale = Math.min(window.devicePixelRatio, 2);
         viewer.clock.shouldAnimate = true;
         viewer.scene.postRender.addEventListener(() => {
-          if (!hudTextEl) return;
+          if (!hudEl) return;
           const cam = viewer.camera;
           const carto = Cesium.Cartographic.fromCartesian(cam.position);
           const lat = Cesium.Math.toDegrees(carto.latitude);
@@ -1040,15 +750,7 @@
           const pitch = Cesium.Math.toDegrees(cam.pitch);
           const roll = Cesium.Math.toDegrees(cam.roll);
           const fmt = (v, n) => (Number.isFinite(v) ? v.toFixed(n) : '-');
-          const segment = currentSegmentLabel || '-';
-          hudTextEl.innerHTML =
-            `Lat ${fmt(lat, 5)}<br>` +
-            `Lon ${fmt(lon, 5)}<br>` +
-            `Alt ${fmt(height, 0)} m<br>` +
-            `Head ${fmt(heading, 1)}°<br>` +
-            `Pitch ${fmt(pitch, 1)}°<br>` +
-            `Roll ${fmt(roll, 1)}°<br>` +
-            `Segment ${segment}`;
+          hudEl.innerHTML = `Lat ${fmt(lat, 5)}<br>Lon ${fmt(lon, 5)}<br>Alt ${fmt(height, 0)} m<br>Head ${fmt(heading, 1)}°<br>Pitch ${fmt(pitch, 1)}°<br>Roll ${fmt(roll, 1)}°`;
         });
 
         viewer.imageryLayers.removeAll();
@@ -1092,26 +794,17 @@
         })();
         await terrainReadyPromise;
 
-        document.getElementById('start').addEventListener('click', () => {
-          if (plannedRouteLoaded && routeCoords.length > 1) {
-            flyover(routeCoords, { segments: routeSegments, skipInitialFly: true });
-          } else {
-            flyover(runCoords, { segmentName: currentRunName, segmentType: 'run' });
-          }
-        });
+        document.getElementById('start').addEventListener('click', () => flyover(runCoords));
 
         panelEl = document.getElementById('ui');
         panelToggleButton = document.getElementById('togglePanel');
         hudEl = document.getElementById('hud');
-        hudTextEl = document.getElementById('hudText');
-        setDefaultViewButton = document.getElementById('setDefaultView');
         resortSelect = document.getElementById('resortSelect');
         runSelect = document.getElementById('runSelect');
         difficultyFilter = document.getElementById('difficultyFilter');
         runLabelsToggle = document.getElementById('toggleRunLabels');
         liftLabelsToggle = document.getElementById('toggleLiftLabels');
         pauseButton = document.getElementById('pause');
-        clearRouteButton = document.getElementById('clearRoute');
         speedInput = document.getElementById('speed');
         rangeInput = document.getElementById('range');
         speedValue = document.getElementById('speedValue');
@@ -1144,21 +837,6 @@
         liftLabelsToggle.addEventListener('change', (e) => setLiftLabelVisibility(e.target.checked));
         document.getElementById('toggleBuildings').addEventListener('change', (e) => toggleBuildings(e.target.checked));
         pauseButton.addEventListener('click', () => setPauseState(!isPaused));
-        clearRouteButton.addEventListener('click', () => clearPlannedRoute());
-        setDefaultViewButton.addEventListener('click', () => {
-          if (!currentResort) return;
-          const cam = viewer.camera;
-          const carto = Cesium.Cartographic.fromCartesian(cam.position);
-          const view = {
-            lon: Cesium.Math.toDegrees(carto.longitude),
-            lat: Cesium.Math.toDegrees(carto.latitude),
-            height: carto.height,
-            heading: Cesium.Math.toDegrees(cam.heading),
-            pitch: Cesium.Math.toDegrees(cam.pitch)
-          };
-          saveDefaultView(currentResort, view);
-          document.getElementById('status').textContent = 'Default view saved';
-        });
 
         const applyPanelState = (collapsed) => {
           panelEl.classList.toggle('collapsed', collapsed);
@@ -1174,23 +852,18 @@
 
         viewer.selectedEntityChanged.addEventListener((entity) => {
           const runName = getRunNameFromEntity(entity);
-          if (entity === null) {
-            clearIsolation();
-            return;
-          }
           if (runName && runName !== currentRunName) {
             setRun(runName, { zoomToRun: false });
           }
-          isolateEntity(entity);
         });
 
         viewer.trackedEntityChanged.addEventListener((entity) => {
           const runName = getRunNameFromEntity(entity);
           if (!runName) return;
           if (runName !== currentRunName) {
-            setRun(runName, { zoomToRun: false }).then(() => flyover(runCoords, { segmentName: runName, segmentType: 'run' }));
+            setRun(runName, { zoomToRun: false }).then(() => flyover(runCoords));
           } else {
-            flyover(runCoords, { segmentName: runName, segmentType: 'run' });
+            flyover(runCoords);
           }
         });
 
@@ -1200,11 +873,6 @@
         }
         if (document.getElementById('toggleRuns').checked) {
           refreshRunOverlay();
-        }
-
-        const params = new URLSearchParams(window.location.search);
-        if (params.get('route') === '1') {
-          loadPlannedRoute({ focusStart: true, startFlyover: false });
         }
       }
 

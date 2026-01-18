@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Elevation Sampler</title>
+    <link
+      href="https://unpkg.com/cesium@1.115.0/Build/Cesium/Widgets/widgets.css"
+      rel="stylesheet"
+    />
+    <style>
+      body { font: 14px/1.4 "Segoe UI", Tahoma, sans-serif; margin: 20px; color: #1f2937; }
+      h1 { margin: 0 0 8px; }
+      button { padding: 8px 12px; font-weight: 600; }
+      #status { margin: 10px 0; color: #374151; }
+      table { border-collapse: collapse; width: 100%; margin-top: 12px; font-size: 12px; }
+      th, td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
+      th { background: #f3f4f6; }
+      #results { max-height: 60vh; overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px; }
+      #actions { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+      a.button { padding: 8px 12px; background: #0ea5e9; color: #0b1120; border-radius: 4px; text-decoration: none; font-weight: 700; border: 1px solid #0284c7; }
+      a.button:hover { background: #38bdf8; color: #0b1120; }
+      #hiddenViewer { width: 1px; height: 1px; visibility: hidden; }
+    </style>
+  </head>
+  <body>
+    <h1>Elevation Sampler</h1>
+    <p>This samples terrain for every node in <code>planner/data/whistler_blackcomb/graph.json</code> using Cesium World Terrain.</p>
+    <div id="actions">
+      <button id="run">Sample elevations</button>
+      <a id="download" class="button" href="#" download="elevations.csv" style="display:none;">Download CSV</a>
+    </div>
+    <div id="status">Idle.</div>
+    <div id="results"></div>
+    <div id="hiddenViewer"></div>
+
+    <script src="config.js"></script>
+    <script src="https://unpkg.com/cesium@1.115.0/Build/Cesium/Cesium.js"></script>
+    <script>
+      if (window.CESIUM_ION_TOKEN) {
+        Cesium.Ion.defaultAccessToken = window.CESIUM_ION_TOKEN;
+      } else {
+        console.warn('Cesium Ion token missing. Set window.CESIUM_ION_TOKEN in config.js');
+      }
+
+      const statusEl = document.getElementById('status');
+      const resultsEl = document.getElementById('results');
+      const runBtn = document.getElementById('run');
+      const downloadLink = document.getElementById('download');
+      let viewer = null;
+
+      async function initViewer() {
+        if (viewer) return viewer;
+        viewer = new Cesium.Viewer('hiddenViewer', {
+          animation: false,
+          timeline: false,
+          baseLayerPicker: false,
+          infoBox: false,
+          geocoder: false,
+          homeButton: false,
+          sceneModePicker: false,
+          navigationHelpButton: false,
+          fullscreenButton: false,
+          selectionIndicator: false
+        });
+        viewer.imageryLayers.removeAll();
+        try {
+          const terrain = await Cesium.createWorldTerrainAsync();
+          viewer.terrainProvider = terrain;
+        } catch (e) {
+          console.warn('Failed to load terrain.', e);
+        }
+        return viewer;
+      }
+
+      async function sampleElevations() {
+        runBtn.disabled = true;
+        downloadLink.style.display = 'none';
+        resultsEl.innerHTML = '';
+        try {
+          statusEl.textContent = 'Loading graph...';
+          const res = await fetch('planner/data/whistler_blackcomb/graph.json');
+          if (!res.ok) throw new Error(`Failed to load graph (${res.status})`);
+          const data = await res.json();
+          const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+          if (nodes.length === 0) throw new Error('No nodes in graph.');
+
+          await initViewer();
+          statusEl.textContent = 'Sampling terrain elevations...';
+          const cartos = nodes.map(n => Cesium.Cartographic.fromDegrees(n.lon, n.lat));
+          await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, cartos);
+
+          const rows = nodes.map((n, i) => ({
+            id: n.id,
+            name: n.name,
+            lat: n.lat,
+            lon: n.lon,
+            elev_m: Math.round(cartos[i].height || 0)
+          }));
+
+          renderTable(rows);
+          const csv = toCSV(rows);
+          const blob = new Blob([csv], { type: 'text/csv' });
+          downloadLink.href = URL.createObjectURL(blob);
+          downloadLink.style.display = 'inline-block';
+          statusEl.textContent = `Done. Sampled ${rows.length} nodes. Showing all rows.`;
+        } catch (e) {
+          console.error(e);
+          statusEl.textContent = `Error: ${e.message}`;
+        } finally {
+          runBtn.disabled = false;
+        }
+      }
+
+      function renderTable(rows) {
+        const header = ['id', 'name', 'lat', 'lon', 'elev_m'];
+        let html = '<table><thead><tr>';
+        for (const h of header) html += `<th>${h}</th>`;
+        html += '</tr></thead><tbody>';
+        for (const row of rows) {
+          html += '<tr>';
+          for (const h of header) html += `<td>${row[h]}</td>`;
+          html += '</tr>';
+        }
+        html += '</tbody></table>';
+        resultsEl.innerHTML = html;
+      }
+
+      function toCSV(rows) {
+        const header = ['id', 'name', 'lat', 'lon', 'elev_m'];
+        const lines = [];
+        lines.push(header.join(','));
+        for (const r of rows) {
+          lines.push(header.map(h => JSON.stringify(r[h] ?? '')).join(','));
+        }
+        return lines.join('\\n');
+      }
+
+      runBtn.addEventListener('click', sampleElevations);
+    </script>
+  </body>
+</html>

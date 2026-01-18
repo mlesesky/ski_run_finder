@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "name": "ski-run-finder",
+  "builds": [
+    { "src": "index.html", "use": "@vercel/static" },
+    { "src": "planner/index.html", "use": "@vercel/static" },
+    { "src": "elevations.html", "use": "@vercel/static" },
+    { "src": "**", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "handle": "filesystem" }
+  ]
+}

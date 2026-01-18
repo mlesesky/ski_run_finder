@@ -1,0 +1,136 @@
+{
+  "nodes": [
+    {
+      "id": "village_base",
+      "name": "Whistler Village Base",
+      "type": "station",
+      "lat": 50.1151,
+      "lon": -122.9574,
+      "elev_m": 675
+    },
+    {
+      "id": "olympic_station",
+      "name": "Olympic Station",
+      "type": "station",
+      "lat": 50.1224,
+      "lon": -122.9572,
+      "elev_m": 1200
+    },
+    {
+      "id": "harmony_top",
+      "name": "Harmony Top",
+      "type": "station",
+      "lat": 50.0758,
+      "lon": -122.9296,
+      "elev_m": 1820
+    },
+    {
+      "id": "harmony_junction",
+      "name": "Harmony Junction",
+      "type": "junction",
+      "lat": 50.0713,
+      "lon": -122.9409,
+      "elev_m": 1700
+    },
+    {
+      "id": "harmony_base",
+      "name": "Harmony Base",
+      "type": "junction",
+      "lat": 50.0608,
+      "lon": -122.9509,
+      "elev_m": 1400
+    }
+  ],
+  "edges": [
+    {
+      "id": "lift_gondola",
+      "name": "Whistler Gondola",
+      "type": "lift",
+      "from": "village_base",
+      "to": "olympic_station",
+      "time_min": 12,
+      "geometry": [
+        [ -122.9574, 50.1151, 675 ],
+        [ -122.9572, 50.1224, 1200 ]
+      ]
+    },
+    {
+      "id": "lift_harmony",
+      "name": "Harmony Express",
+      "type": "lift",
+      "from": "olympic_station",
+      "to": "harmony_top",
+      "time_min": 9,
+      "geometry": [
+        [ -122.9572, 50.1224, 1200 ],
+        [ -122.9400, 50.0950, 1600 ],
+        [ -122.9296, 50.0758, 1820 ]
+      ]
+    },
+    {
+      "id": "run_olympic",
+      "name": "Olympic",
+      "type": "run",
+      "difficulty": "green",
+      "from": "olympic_station",
+      "to": "village_base",
+      "geometry": [
+        [ -122.9572, 50.1224, 1200 ],
+        [ -122.9570, 50.1180, 950 ],
+        [ -122.9574, 50.1151, 675 ]
+      ]
+    },
+    {
+      "id": "run_harmony_ridge",
+      "name": "Harmony Ridge",
+      "type": "run",
+      "difficulty": "blue",
+      "from": "harmony_top",
+      "to": "harmony_junction",
+      "geometry": [
+        [ -122.9296, 50.0758, 1820 ],
+        [ -122.9340, 50.0740, 1760 ],
+        [ -122.9409, 50.0713, 1700 ]
+      ]
+    },
+    {
+      "id": "run_lower_harmony",
+      "name": "Lower Harmony",
+      "type": "run",
+      "difficulty": "blue",
+      "from": "harmony_junction",
+      "to": "harmony_base",
+      "geometry": [
+        [ -122.9409, 50.0713, 1700 ],
+        [ -122.9460, 50.0665, 1550 ],
+        [ -122.9509, 50.0608, 1400 ]
+      ]
+    },
+    {
+      "id": "run_gunbarrel",
+      "name": "Gunbarrel",
+      "type": "run",
+      "difficulty": "black",
+      "from": "harmony_top",
+      "to": "harmony_base",
+      "geometry": [
+        [ -122.9296, 50.0758, 1820 ],
+        [ -122.9400, 50.0680, 1600 ],
+        [ -122.9509, 50.0608, 1400 ]
+      ]
+    },
+    {
+      "id": "walk_traverse",
+      "name": "Traverse Connector",
+      "type": "walk",
+      "from": "harmony_base",
+      "to": "olympic_station",
+      "time_min": 6,
+      "geometry": [
+        [ -122.9509, 50.0608, 1400 ],
+        [ -122.9490, 50.0710, 1450 ],
+        [ -122.9572, 50.1224, 1200 ]
+      ]
+    }
+  ]
+}

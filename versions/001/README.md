@@ -32,17 +32,3 @@ Adding a resort
 Notes
 - The POC uses Cesium via CDN. Terrain and 3D buildings require a Cesium Ion access token.
 - Run difficulty colors are based on the `difficulty` or `piste:difficulty` property in the runs GeoJSON.
-
-Cesium Ion token (keep it secret)
-- Create a local `config.js` in the project root (this file is ignored by git) with:
-  ```js
-  window.CESIUM_ION_TOKEN = 'your-token-here';
-  ```
-- Both `index.html` and `planner/index.html` read the token from `config.js`. If it’s missing, you’ll see a console warning and imagery/terrain may fail.
-
-Hosting (static)
-- Works on any static host (GitHub Pages, Netlify, Vercel, S3/CloudFront).
-- Do **not** commit your token. Have the host generate `config.js` at deploy time:
-  - **Vercel** (recommended here): set env `CESIUM_ION_TOKEN`; set build command to `echo "window.CESIUM_ION_TOKEN='${CESIUM_ION_TOKEN}'" > config.js`; framework: Other/Static; publish root.
-  - Netlify: add env `CESIUM_ION_TOKEN` and build command `echo "window.CESIUM_ION_TOKEN='${CESIUM_ION_TOKEN}'" > config.js`
-  - GitHub Pages: use an action to write `config.js` from a repo secret `CESIUM_ION_TOKEN` into the published branch.

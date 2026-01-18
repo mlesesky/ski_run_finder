@@ -1,0 +1,9 @@
+{
+  "resorts": [
+    {
+      "id": "whistler_blackcomb",
+      "name": "Whistler Blackcomb",
+      "graph": "data/whistler_blackcomb/graph.json"
+    }
+  ]
+}
