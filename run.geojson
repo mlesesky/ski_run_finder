@@ -1,0 +1,18 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "Harmony Ridge (sample)" },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [ -122.9460, 50.1120 ],
+          [ -122.9500, 50.1140 ],
+          [ -122.9550, 50.1160 ],
+          [ -122.9580, 50.1190 ]
+        ]
+      }
+    }
+  ]
+}

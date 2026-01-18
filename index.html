@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Whistler Run Flyover POC</title>
+    <link href="https://unpkg.com/cesium@1.115.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <style>
+      html,body,#cesiumContainer{height:100%;width:100%;margin:0;padding:0;overflow:hidden}
+      #ui{position:absolute;left:8px;top:8px;z-index:2;background:rgba(255,255,255,0.9);padding:8px;border-radius:6px}
+    </style>
+  </head>
+  <body>
+    <div id="cesiumContainer"></div>
+    <div id="ui">
+      <button id="start">Start Flyover</button>
+      <span id="status" style="margin-left:8px"></span>
+    </div>
+
+    <script src="https://unpkg.com/cesium@1.115.0/Build/Cesium/Cesium.js"></script>
+    <script>
+      const viewer = new Cesium.Viewer('cesiumContainer', {
+        timeline: false,
+        animation: false,
+        baseLayerPicker: true
+      });
+
+      let runCoords = [];
+
+      async function loadRun() {
+        try {
+          const res = await fetch('run.geojson');
+          const geo = await res.json();
+          const feat = geo.features && geo.features[0];
+          if (!feat || feat.geometry.type !== 'LineString') throw new Error('expected LineString feature');
+          runCoords = feat.geometry.coordinates;
+          const flat = [].concat(...runCoords.map(c => [c[0], c[1]]));
+          viewer.entities.add({
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArray(flat),
+              width: 4,
+              material: Cesium.Color.ORANGE
+            }
+          });
+          // zoom to run
+          const first = runCoords[0];
+          viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(first[0], first[1], 2000) });
+          document.getElementById('status').textContent = 'Run loaded';
+        } catch (e) {
+          console.error(e);
+          document.getElementById('status').textContent = 'Failed to load run.geojson';
+        }
+      }
+
+      function flyover(coords) {
+        if (!coords || coords.length === 0) return;
+        let i = 0;
+        function step() {
+          if (i >= coords.length) {
+            document.getElementById('status').textContent = 'Flyover complete';
+            return;
+          }
+          const [lon, lat] = coords[i];
+          viewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(lon, lat, 1200),
+            orientation: { pitch: Cesium.Math.toRadians(-45) },
+            duration: 1.6
+          }).then(() => { i++; step(); });
+        }
+        document.getElementById('status').textContent = 'Flying...';
+        step();
+      }
+
+      document.getElementById('start').addEventListener('click', () => flyover(runCoords));
+
+      loadRun();
+    </script>
+  </body>
+</html>
