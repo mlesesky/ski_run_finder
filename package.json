@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "build": "npm run vercel-build",
     "vercel-build": "echo \"window.CESIUM_ION_TOKEN='${CESIUM_ION_TOKEN}'\" > config.js"
   }
 }
