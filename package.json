@@ -1,0 +1,8 @@
+{
+  "name": "ski_run_finder",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "vercel-build": "echo \"window.CESIUM_ION_TOKEN='${CESIUM_ION_TOKEN}'\" > config.js"
+  }
+}
